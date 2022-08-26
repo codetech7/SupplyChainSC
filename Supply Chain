@@ -1,0 +1,88 @@
+//SPDX-License-Identifier: MIT LICENSE
+
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+pragma solidity 0.8.12;
+
+contract Item{
+    uint priceInWei;
+    uint pricePaid;
+    uint index;
+
+    ItemManager ParentContract;
+
+    constructor(ItemManager _ParentContract, uint price, uint _index){
+        priceInWei = price;
+        index = _index;
+        ParentContract = _ParentContract;
+
+    }
+
+    receive() payable external {
+        //only accept payment for an object that has not been bought
+        require(pricePaid == 0, "Item has been paid for"); 
+        //ensure that the payment been sent is full payment for the item
+        require(priceInWei == msg.value, "Only full payments please"); 
+        //update the price paid before sending the ether to prevent reentrancy attack;
+        pricePaid += msg.value; 
+        //send the payment for the item to the item manager and storing the result
+       (bool sent, ) = address(ParentContract).call{value: msg.value}(abi.encodeWithSignature("triggerPayment(uint256)", index));
+        //using low-level call to triggerPayment from item;
+        require(sent, "The payment did not go through");
+    }
+}
+
+contract ItemManager is Ownable{
+
+    using Counters for Counters.Counter;
+    Counters.Counter private itemId;
+
+    struct Product {
+        Item item;
+        string name;
+        uint price;
+        ItemManager.SupplyChainState state;
+    }
+
+    mapping(uint => Product) public itemIdtoItem;
+    //a mapping of item index to item struct
+
+    enum SupplyChainState{Created, Paid, Delivered}
+    //an enum representing items in various stages of the supply chain
+
+    event SupplyChainStep(uint itemIndex, uint chainStep, address itemAddress);
+    //an event emitted to track where our product is in the supply line
+
+
+    //function to create a new product
+    //the function creates a new instance of the smart contract item along with other attributes of the item
+    function createItem(string calldata _name, uint price) public onlyOwner {
+        Item newItem = new Item(this, price, itemId.current());
+        itemIdtoItem[itemId.current()].item = newItem;
+        itemIdtoItem[itemId.current()].name = _name;
+        itemIdtoItem[itemId.current()].price = price;
+        itemIdtoItem[itemId.current()].state = SupplyChainState.Created;  
+        emit SupplyChainStep(itemId.current(), uint(itemIdtoItem[itemId.current()].state), address(newItem)); //cast the enum of the current state of the product to unit
+        itemId.increment();
+        
+    }
+
+    //function to trigger Payment
+    function triggerPayment(uint index) public payable{
+        require(itemIdtoItem[index].price == msg.value, "Not product price");
+        require(itemIdtoItem[index].state == SupplyChainState.Created, "Item has been paid for");
+        itemIdtoItem[index].state = SupplyChainState.Paid;
+        emit SupplyChainStep(index, uint(itemIdtoItem[index].state), address(itemIdtoItem[index].item)); //emit the paid event
+        
+
+    }
+
+    //function to trigger Delivery
+    function triggerDelivery(uint index) public onlyOwner{
+        require(itemIdtoItem[index].state == SupplyChainState.Paid, "Item has not been paid for");
+        itemIdtoItem[index].state = SupplyChainState.Delivered;
+        emit SupplyChainStep(index, uint(itemIdtoItem[index].state), address(itemIdtoItem[index].item)); //emit the delivered event
+
+    }
+}
